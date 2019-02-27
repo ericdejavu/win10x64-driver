@@ -1,5 +1,6 @@
 #include <ntddk.h>
 
+// 反编译的SSDT结构体
 typedef struct _ServiceDescriptorTable {
 	PVOID ServiceTableBase;
 	PVOID ServiceTableCounter;
@@ -13,7 +14,9 @@ void unload(PDRIVER_OBJECT driver) {
 	KdPrint(("[hiDeivce]卸载驱动"));
 }
 
-
+// 匹配特征码 备注特征码通过ida，反编译ntoskrnl.exe，找到ZwXXXX，多次跳转获得
+// KeServiceDescriptorTable			  0x4c8d15
+// ShadowKeServiceDescriptorTable	0x4c8d1d
 PServiceDescriptorTable GetKeServiceDescriptorTable64() {
 	PUCHAR startSearchAddress = (PUCHAR)__readmsr(0xC0000082);
 	PUCHAR endSearchAddress = startSearchAddress + 0x500;
@@ -37,39 +40,56 @@ PServiceDescriptorTable GetKeServiceDescriptorTable64() {
 	return 0;
 }
 
-
-NTSTATUS DriverEntry(PDRIVER_OBJECT driver, PUNICODE_STRING str) {
-	KdPrint(("[hiDeivce]载入驱动"));
-	driver->DriverUnload = unload;
+// 计算公式
+// x64 (base[index] >> 4) + base
+// x86 base + (0x7a - index) * 4		----- 未测试
+ULONGLONG GetCurrentFunctionAddress(int index) {
 	ULONGLONG CurrentNtOpenProcessAddress;
 	__try {
-		KdPrint(("Address in processing"));
 		ULONG *SSDT_Adr;
-		KdPrint(("[hiDeivce]检查1"));
 		KeServiceDescriptorTable = GetKeServiceDescriptorTable64();
-		KdPrint(("[hiDeivce]检查0"));
 		SSDT_Adr = (PULONG)KeServiceDescriptorTable->ServiceTableBase;
-		//KdPrint(("[hiDeivce]检查2:%p", t_addr));
-		//SSDT_Adr = (PLONG)(t_addr + 0x7A * 4);
-		KdPrint(("[hiDeivce]检查3"));
-		CurrentNtOpenProcessAddress = (ULONGLONG)((SSDT_Adr[38]) >> 4);
-		CurrentNtOpenProcessAddress += (ULONGLONG)SSDT_Adr;
-		KdPrint(("[hiDeivce]检查4"));
+		CurrentNtOpenProcessAddress = (ULONGLONG)((SSDT_Adr[38]) >> 4) + (ULONGLONG)SSDT_Adr;
 		KdPrint(("[hiDeivce]当前地址:%p", CurrentNtOpenProcessAddress));
 	}
 	__except (1) {
-		KdPrint(("[hiDeivce]into exception handle"));
+		KdPrint(("[hiDeivce]当前地址 into exception handle"));
+		return 0;
 	}
+	return CurrentNtOpenProcessAddress;
+}
 
+
+ULONGLONG GetOriginFunctionAddress(UNICODE_STRING processName) {
+	ULONGLONG originAddr;
 	__try {
-		UNICODE_STRING processName;
-		ULONGLONG originAddr;
-		RtlInitUnicodeString(&processName, L"NtOpenProcess");
+		// RtlInitUnicodeString(&processName, L"NtOpenProcess");
 		originAddr = (ULONGLONG)MmGetSystemRoutineAddress(&processName);
 		KdPrint(("[hiDeivce]原始地址:%p", originAddr));
 	}
 	__except (1) {
 		KdPrint(("[hiDeivce]原始地址 into exception handle"));
+		return 0;
 	}
+	return originAddr;
+}
+
+// 入口
+NTSTATUS DriverEntry(PDRIVER_OBJECT driver, PUNICODE_STRING str) {
+	KdPrint(("[hiDeivce]载入驱动"));
+	driver->DriverUnload = unload;
+	UNICODE_STRING processName;
+	RtlInitUnicodeString(&processName, L"NtOpenProcess");
+
+	ULONGLONG CurrentAddress = GetCurrentFunctionAddress(38);
+	ULONGLONG OriginAddress = GetOriginFunctionAddress(processName);
+
+	if (CurrentAddress == OriginAddress) {
+		KdPrint(("地址相同"));
+	}
+	else {
+		KdPrint(("地址不同"));
+	}
+
 	return STATUS_SUCCESS;
 }
